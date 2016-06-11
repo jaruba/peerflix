@@ -7,6 +7,17 @@ var url = require('url')
 var mime = require('mime')
 var pump = require('pump')
 
+var encoder = {};
+
+try {
+    encoder = require('streaming-media-encoder/Encoder');
+} catch (e) { }
+
+var profile = false;
+var activeFile = false;
+var activeEngine = false;
+var forceMime = false;
+
 var parseBlocklist = function (filename) {
   // TODO: support gzipped files
   var blocklistData = fs.readFileSync(filename, { encoding: 'utf8' })
@@ -42,6 +53,7 @@ var createServer = function (e, opts) {
     }
 
     e.files[index].select()
+    activeFile = e.files[0];
     server.index = e.files[index]
 
     if (opts.sort) e.files.sort(opts.sort)
@@ -148,26 +160,49 @@ var createServer = function (e, opts) {
     }
 
     var file = e.files[i]
+    activeFile = file;
     var range = request.headers.range
     range = range && rangeParser(file.length, range)[0]
     response.setHeader('Accept-Ranges', 'bytes')
-    response.setHeader('Content-Type', getType(file.name))
+    response.setHeader('Content-Type', forceMime || getType(file.name))
     response.setHeader('transferMode.dlna.org', 'Streaming')
     response.setHeader('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=017000 00000000000000000000000000')
     if (!range) {
       response.setHeader('Content-Length', file.length)
       if (request.method === 'HEAD') return response.end()
-      pump(file.createReadStream(), response)
-      return
+
+      if (!profile) {
+          pump(file.createReadStream(), response)
+          return
+      }
+    } else {
+
+        response.statusCode = 206
+        response.setHeader('Content-Length', range.end - range.start + 1)
+        response.setHeader('Content-Range', 'bytes ' + range.start + '-' + range.end + '/' + file.length)
+        if (request.method === 'HEAD') return response.end()
+
     }
 
-    response.statusCode = 206
-    response.setHeader('Content-Length', range.end - range.start + 1)
-    response.setHeader('Content-Range', 'bytes ' + range.start + '-' + range.end + '/' + file.length)
-    response.setHeader('transferMode.dlna.org', 'Streaming')
-    response.setHeader('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=017000 00000000000000000000000000')
-    if (request.method === 'HEAD') return response.end()
-    pump(file.createReadStream(range), response)
+    if (!profile) {
+        pump(file.createReadStream(range), response)
+    } else {
+
+        encoder.encode(activeEngine, {
+            force: true
+        }).then(function(stream) {
+            stream.pipe(response, {
+                end: true
+            });
+            function endStream () {
+                console.log("stream ended, nothing more to do.");
+                activeEngine.removeAllListeners();
+                response.end();
+            }
+            stream.on("end", endStream);
+        });
+
+    }
   })
 
   server.on('connection', function (socket) {
@@ -205,6 +240,49 @@ module.exports = function (torrent, opts) {
   })
 
   engine.listen()
+
+  engine.setProfile = function(objective) {
+
+    if (!objective) {
+        forceMime = null;
+        profile = null;
+        activeEngine = null;
+    } else {
+
+        if (objective.mime)
+            forceMime = objective.mime;
+
+        if (objective.profileName) {
+            profile = objective.profileName;
+        } else if (objective.args) {
+            profile = {
+                getFFmpegFlags: function() {
+                    return new Promise(function(resolve) {
+                        resolve({ input: [], output: objective.args });
+                    });
+                },
+                canPlay: function() {
+                    return false;
+                }
+            }
+        }
+
+        if (profile) {
+            activeEngine = encoder.profile(encoder.profiles[profile], activeFile.length);
+
+            function streamNeeded (startByte, endByte, cb) {
+                console.info("streamNeeded", startByte, endByte);
+                cb(activeFile.createReadStream({
+                    start: startByte,
+                    end: endByte
+                }));
+            }
+            activeEngine.on("streamNeeded", streamNeeded);
+        }
+
+    }
+
+  };
 
   return engine
 }
