@@ -206,7 +206,8 @@ var createServer = function (e, opts) {
   })
 
   server.on('connection', function (socket) {
-    socket.setTimeout(36000000)
+//    socket.setTimeout(36000000)
+      socket.setTimeout(Number.MAX_SAFE_INTEGER)
   })
 
   return server
