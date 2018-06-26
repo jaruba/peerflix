@@ -64,6 +64,7 @@ var createServer = function (e, opts) {
 
   server.on('request', function (request, response) {
     var u = url.parse(request.url)
+    u.pathname = decodeURIComponent(u.pathname)
     var host = request.headers.host || 'localhost'
 
     var toPlaylist = function () {
@@ -207,7 +208,7 @@ var createServer = function (e, opts) {
 
   server.on('connection', function (socket) {
 //    socket.setTimeout(36000000)
-      socket.setTimeout(Number.MAX_SAFE_INTEGER)
+    socket.setTimeout(Number.MAX_SAFE_INTEGER)
   })
 
   return server
